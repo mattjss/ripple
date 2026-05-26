@@ -73,67 +73,33 @@
     let isInside = false;
 
     // ── Audio ─────────────────────────────────────────────────
-    let AC;
-    function ac() {
-      if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
-      if (AC.state === 'suspended') AC.resume();
-      return AC;
+    let hoverAudio = null, clickAudio = null;
+    function initAudio() {
+      if (hoverAudio) return;
+      hoverAudio = new Audio('./sounds/hover.mp3');
+      hoverAudio.volume = 0.25;
+      clickAudio = new Audio('./sounds/selection.mp3');
+      clickAudio.volume = 0.42;
     }
-
-    // C major high register — bubbly, bright Nintendo feel
-    const RIPPLE_NOTES = [523, 587, 659, 784, 880, 1047, 1175];
-
-    let lastNoteTime = 0;
-
-    function playNote(freq) {
-      try {
-        const a = ac();
-        const t = a.currentTime;
-        if (t - lastNoteTime < 0.055) return;
-        lastNoteTime = t;
-        const o = a.createOscillator(), g = a.createGain();
-        o.type = 'square'; o.frequency.value = freq;
-        o.connect(g); g.connect(a.destination);
-        g.gain.setValueAtTime(0.028, t);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.052);
-        o.start(t); o.stop(t + 0.056);
-      } catch (_) {}
+    function playNote() {
+      initAudio();
+      hoverAudio.currentTime = 0;
+      hoverAudio.play().catch(() => {});
     }
-
     function playClick() {
-      try {
-        const a = ac();
-        const t = a.currentTime;
-        // Noise splash
-        const buf = a.createBuffer(1, Math.floor(a.sampleRate * 0.12), a.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (data.length * 0.25));
-        const src = a.createBufferSource(); src.buffer = buf;
-        const flt = a.createBiquadFilter(); flt.type = 'lowpass'; flt.frequency.value = 1200;
-        const gn = a.createGain(); gn.gain.setValueAtTime(0.16, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-        src.connect(flt); flt.connect(gn); gn.connect(a.destination); src.start(t);
-        // Bubbly ascending arpeggio
-        [523, 659, 784, 1047, 1319].forEach((note, i) => {
-          const d = 0.04 + i * 0.035;
-          const o = a.createOscillator(), g = a.createGain();
-          o.type = 'square'; o.frequency.value = note;
-          o.connect(g); g.connect(a.destination);
-          g.gain.setValueAtTime(0.038, t + d);
-          g.gain.exponentialRampToValueAtTime(0.001, t + d + 0.06);
-          o.start(t + d); o.stop(t + d + 0.065);
-        });
-      } catch (_) {}
+      initAudio();
+      clickAudio.currentTime = 0;
+      clickAudio.play().catch(() => {});
     }
 
-    let lastTickDot = -1;
+    let lastTickDot = -1, lastTickMs = 0;
     function maybeNoteDot(di) {
       if (di === lastTickDot) return;
+      const now = performance.now();
+      if (now - lastTickMs < 140) return;
       lastTickDot = di;
-      // Y position maps to scale note — top = high, bottom = low
-      const dot = dots[di];
-      const yFrac = 1 - (dot.y - PAD) / (H - PAD * 2);
-      const note = RIPPLE_NOTES[Math.min(Math.floor(yFrac * RIPPLE_NOTES.length), RIPPLE_NOTES.length - 1)];
-      playNote(note);
+      lastTickMs = now;
+      playNote();
     }
 
     canvas.addEventListener('mousemove', e => {
