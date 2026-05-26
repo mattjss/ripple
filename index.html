@@ -69,6 +69,7 @@
     }
 
     const ripples = [];
+    const rings   = []; // visual expanding rings on click
     let mx = -9999, my = -9999;
     let isInside = false;
 
@@ -121,18 +122,17 @@
 
     canvas.addEventListener('pointerdown', e => {
       const r = canvas.getBoundingClientRect();
-      ripples.push({
-        cx: (e.clientX - r.left) * (W / r.width),
-        cy: (e.clientY - r.top)  * (H / r.height),
-        t: 0
-      });
+      const cx = (e.clientX - r.left) * (W / r.width);
+      const cy = (e.clientY - r.top)  * (H / r.height);
+      ripples.push({ cx, cy, t: 0 });
+      rings.push({ cx, cy, r: 0, born: 0 });
       playClick();
     });
 
     const STIFFNESS  = 0.25;
     const DAMPING    = 0.65;
     const DOT_R      = 2.5;
-    const HOVER_R    = 80;
+    const HOVER_R    = 88;
     const RIPPLE_SPD = 140;
     const RIPPLE_DUR = 1.8;
 
@@ -142,26 +142,35 @@
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
       const t = now / 1000;
+
       for (let i = ripples.length - 1; i >= 0; i--) {
         ripples[i].t += dt;
         if (ripples[i].t > RIPPLE_DUR) ripples.splice(i, 1);
       }
+      for (let i = rings.length - 1; i >= 0; i--) {
+        rings[i].born += dt;
+        rings[i].r    += 280 * dt;
+        if (rings[i].r > W * 1.5) rings.splice(i, 1);
+      }
+
       dots.forEach(d => {
-        // Idle breathing — each dot offset by position so it looks organic
         const breathe = 0.014 * Math.sin(t * 1.6 + d.x * 0.013 + d.y * 0.011);
         let target = d.base + breathe;
+
         if (isInside) {
           const dist = Math.hypot(d.x - mx, d.y - my);
-          if (dist < HOVER_R) target += (1 - dist / HOVER_R) * 1.6;
+          if (dist < HOVER_R) target += (1 - dist / HOVER_R) * 2.8;
         }
+
         ripples.forEach(rip => {
-          const dist = Math.hypot(d.x - rip.cx, d.y - rip.cy);
+          const dist     = Math.hypot(d.x - rip.cx, d.y - rip.cy);
           const waveFront = rip.t * RIPPLE_SPD;
           const waveDiff  = dist - waveFront;
           if (Math.abs(waveDiff) < 60) {
-            target += Math.sin((1 - Math.abs(waveDiff) / 60) * Math.PI) * 1.8 * (1 - rip.t / RIPPLE_DUR);
+            target += Math.sin((1 - Math.abs(waveDiff) / 60) * Math.PI) * 2.2 * (1 - rip.t / RIPPLE_DUR);
           }
         });
+
         const spring = (target - d.scale) * STIFFNESS;
         d.vel = (d.vel + spring) * DAMPING;
         d.scale += d.vel;
@@ -169,22 +178,57 @@
     }
 
     function draw() {
-      ctx.clearRect(0, 0, W, H);
+      // Black base in source-over, then screen for all dots
+      ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = '#000';
       ctx.beginPath();
       ctx.roundRect(0, 0, W, H, 10);
       ctx.fill();
+
+      // Cursor heat aura
+      if (isInside) {
+        ctx.globalCompositeOperation = 'screen';
+        const aura = ctx.createRadialGradient(mx, my, 0, mx, my, HOVER_R * 1.1);
+        aura.addColorStop(0,   'rgba(255,140,40,0.14)');
+        aura.addColorStop(0.5, 'rgba(255,80,20,0.05)');
+        aura.addColorStop(1,   'rgba(0,0,0,0)');
+        ctx.beginPath();
+        ctx.arc(mx, my, HOVER_R * 1.1, 0, Math.PI*2);
+        ctx.fillStyle = aura;
+        ctx.fill();
+      }
+
+      ctx.globalCompositeOperation = 'screen';
+
+      // Click rings (warm)
+      rings.forEach(rg => {
+        const a = Math.max(0, 0.55 * (1 - rg.born * 1.4));
+        ctx.beginPath();
+        ctx.arc(rg.cx, rg.cy, rg.r, 0, Math.PI*2);
+        ctx.strokeStyle = `hsla(35,100%,70%,${a.toFixed(3)})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+
+      // Dots
       dots.forEach(d => {
-        const r = Math.max(0.1, DOT_R * d.scale);
-        const disp = d.scale - 1;
-        // Glow halo on displaced dots
-        if (disp > 0.12) {
-          ctx.shadowBlur = disp * 14;
-          ctx.shadowColor = 'rgba(255,255,255,0.55)';
+        const r    = Math.max(0.1, DOT_R * d.scale);
+        const disp = Math.max(0, d.scale - 1);
+        const t    = Math.min(disp / 1.8, 1);
+
+        // Blackbody color: deep blue at rest → cyan → warm white when excited
+        const hue = 215 - t * 182;  // 215 (blue) → 33 (orange)
+        const sat = 65  + t * 35;   // 65% → 100%
+        const lit = 26  + t * 60;   // 26% → 86%
+
+        if (disp > 0.08) {
+          ctx.shadowBlur  = disp * 16;
+          ctx.shadowColor = `hsl(${hue.toFixed(0)},${sat.toFixed(0)}%,${lit.toFixed(0)}%)`;
         }
+
         ctx.beginPath();
         ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,255,255,${Math.min(1, 0.35 + disp * 0.65)})`;
+        ctx.fillStyle = `hsl(${hue.toFixed(0)},${sat.toFixed(0)}%,${lit.toFixed(0)}%)`;
         ctx.fill();
         ctx.shadowBlur = 0;
       });
