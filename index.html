@@ -8,39 +8,19 @@
     :root { --sz: 422px; }
     @media (min-width: 1440px) { :root { --sz: 576px; } }
     @media (max-width: 480px)  { :root { --sz: 322px; } }
-
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     html, body {
-      width: 100%; height: 100%;
-      background: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      font-family: system-ui, -apple-system, sans-serif;
+      width: 100%; height: 100%; background: #000;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden; font-family: system-ui, sans-serif; cursor: none;
     }
-
-    #wrap {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 20px;
-    }
-
+    #wrap { display: flex; flex-direction: column; align-items: center; gap: 20px; }
     canvas {
-      width: var(--sz);
-      height: var(--sz);
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.06);
-      cursor: crosshair;
-      display: block;
+      width: var(--sz); height: var(--sz);
+      border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); display: block;
     }
-
     #label {
-      font-size: 10px;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
       color: rgba(255,255,255,0.2);
     }
   </style>
@@ -50,197 +30,207 @@
     <canvas id="c" width="500" height="500"></canvas>
     <span id="label">ripple — move + click</span>
   </div>
+<script>
+  const canvas = document.getElementById('c');
+  const ctx    = canvas.getContext('2d');
+  const W = 500, H = 500;
 
-  <script>
-    const canvas = document.getElementById('c');
-    const ctx    = canvas.getContext('2d');
-    const W = 500, H = 500;
+  // ── Wave simulation ───────────────────────────────────────────────────────
+  const GSIZE  = 26;
+  const PAD    = 22;
+  const cellW  = (W - PAD * 2) / (GSIZE - 1);
+  const cellH  = (H - PAD * 2) / (GSIZE - 1);
+  const C_WAVE = 28;    // grid units / s  (Courant safe: C*dt ≈ 0.47 < 0.707)
+  const DAMP   = 0.994; // per-frame energy loss
 
-    const COLS = 20, ROWS = 20;
-    const PAD  = 24;
-    const cellW = (W - PAD * 2) / (COLS - 1);
-    const cellH = (H - PAD * 2) / (ROWS - 1);
+  // Two-frame history for the finite-difference wave equation
+  const u  = new Float32Array(GSIZE * GSIZE); // current
+  const u1 = new Float32Array(GSIZE * GSIZE); // previous
 
-    const dots = [];
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        dots.push({ x: PAD + c * cellW, y: PAD + r * cellH, scale: 1, vel: 0, base: 1 });
+  function I(r, c) { return r * GSIZE + c; }
+
+  // Grid dot positions (fixed)
+  const dots = [];
+  for (let r = 0; r < GSIZE; r++)
+    for (let c = 0; c < GSIZE; c++)
+      dots.push({ x: PAD + c * cellW, y: PAD + r * cellH, gr: r, gc: c });
+
+  let mx = -9999, my = -9999, isInside = false;
+  let lastCursorCell = -1;
+  const rings = [];
+
+  // ── Audio ─────────────────────────────────────────────────────────────────
+  let hoverAudio = null, clickAudio = null;
+  function initAudio() {
+    if (hoverAudio) return;
+    hoverAudio = new Audio('./sounds/selection.mp3');
+    hoverAudio.volume = 0.06;
+    clickAudio = new Audio('./sounds/selection.mp3');
+    clickAudio.volume = 0.42;
+  }
+  function playNote() { initAudio(); hoverAudio.currentTime = 0; hoverAudio.play().catch(()=>{}); }
+  function playClick() { initAudio(); clickAudio.currentTime = 0; clickAudio.play().catch(()=>{}); }
+
+  let lastTickDot = -1, lastTickMs = 0;
+  function maybeNoteDot(di) {
+    if (di === lastTickDot) return;
+    const now = performance.now();
+    if (now - lastTickMs < 240) return;
+    lastTickDot = di; lastTickMs = now;
+    playNote();
+  }
+
+  // ── Events ────────────────────────────────────────────────────────────────
+  canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    mx = (e.clientX - r.left) * (W / r.width);
+    my = (e.clientY - r.top)  * (H / r.height);
+    isInside = true;
+
+    // Sound: nearest dot
+    let nearestDi = -1, nearestDist = 9999;
+    dots.forEach((d, i) => {
+      const dist = Math.hypot(d.x - mx, d.y - my);
+      if (dist < nearestDist) { nearestDist = dist; nearestDi = i; }
+    });
+    if (nearestDist < 22) maybeNoteDot(nearestDi);
+  });
+  canvas.addEventListener('mouseleave', () => {
+    isInside = false; mx = -9999; my = -9999;
+    lastTickDot = -1; lastCursorCell = -1;
+  });
+
+  canvas.addEventListener('pointerdown', e => {
+    const r  = canvas.getBoundingClientRect();
+    const cx = (e.clientX - r.left) * (W / r.width);
+    const cy = (e.clientY - r.top)  * (H / r.height);
+    // Impulse at nearest grid cell
+    const nr = Math.max(1, Math.min(GSIZE-2, Math.round((cy - PAD) / cellH)));
+    const nc = Math.max(1, Math.min(GSIZE-2, Math.round((cx - PAD) / cellW)));
+    u[I(nr, nc)]     += 4.5;
+    u[I(nr-1, nc)]   += 2.0;
+    u[I(nr+1, nc)]   += 2.0;
+    u[I(nr, nc-1)]   += 2.0;
+    u[I(nr, nc+1)]   += 2.0;
+    rings.push({ x: cx, y: cy, r: 0, born: 0 });
+    playClick();
+  });
+
+  // ── Update ────────────────────────────────────────────────────────────────
+  let last = performance.now();
+  const nu = new Float32Array(GSIZE * GSIZE); // reuse buffer
+
+  function update(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    const fac = (C_WAVE * dt) * (C_WAVE * dt);
+
+    // 2D finite-difference wave equation (interior)
+    for (let r = 1; r < GSIZE-1; r++) {
+      for (let c = 1; c < GSIZE-1; c++) {
+        const i   = I(r, c);
+        const lap = u[I(r+1,c)] + u[I(r-1,c)] + u[I(r,c+1)] + u[I(r,c-1)] - 4*u[i];
+        nu[i] = (2*u[i] - u1[i] + fac * lap) * DAMP;
       }
     }
 
-    const ripples = [];
-    const rings   = []; // visual expanding rings on click
-    let mx = -9999, my = -9999;
-    let isInside = false;
-
-    // ── Audio ─────────────────────────────────────────────────
-    let hoverAudio = null, clickAudio = null;
-    function initAudio() {
-      if (hoverAudio) return;
-      hoverAudio = new Audio('./sounds/selection.mp3');
-      hoverAudio.volume = 0.06;
-      clickAudio = new Audio('./sounds/selection.mp3');
-      clickAudio.volume = 0.42;
-    }
-    function playNote() {
-      initAudio();
-      hoverAudio.currentTime = 0;
-      hoverAudio.play().catch(() => {});
-    }
-    function playClick() {
-      initAudio();
-      clickAudio.currentTime = 0;
-      clickAudio.play().catch(() => {});
+    // Neumann (reflecting) boundaries — waves bounce off edges
+    for (let k = 0; k < GSIZE; k++) {
+      nu[I(0,k)]        = nu[I(1,k)];
+      nu[I(GSIZE-1,k)]  = nu[I(GSIZE-2,k)];
+      nu[I(k,0)]        = nu[I(k,1)];
+      nu[I(k,GSIZE-1)]  = nu[I(k,GSIZE-2)];
     }
 
-    let lastTickDot = -1, lastTickMs = 0;
-    function maybeNoteDot(di) {
-      if (di === lastTickDot) return;
-      const now = performance.now();
-      if (now - lastTickMs < 240) return;
-      lastTickDot = di;
-      lastTickMs = now;
-      playNote();
-    }
-
-    canvas.addEventListener('mousemove', e => {
-      const r = canvas.getBoundingClientRect();
-      mx = (e.clientX - r.left) * (W / r.width);
-      my = (e.clientY - r.top)  * (H / r.height);
-      isInside = true;
-      let nearestDi = -1, nearestDist = 9999;
-      dots.forEach((d, i) => {
-        const dist = Math.hypot(d.x - mx, d.y - my);
-        if (dist < nearestDist) { nearestDist = dist; nearestDi = i; }
-      });
-      if (nearestDist < 22) maybeNoteDot(nearestDi);
-    });
-
-    canvas.addEventListener('mouseleave', () => {
-      isInside = false; mx = -9999; my = -9999; lastTickDot = -1;
-    });
-
-    canvas.addEventListener('pointerdown', e => {
-      const r = canvas.getBoundingClientRect();
-      const cx = (e.clientX - r.left) * (W / r.width);
-      const cy = (e.clientY - r.top)  * (H / r.height);
-      ripples.push({ cx, cy, t: 0 });
-      rings.push({ cx, cy, r: 0, born: 0 });
-      playClick();
-    });
-
-    const STIFFNESS  = 0.25;
-    const DAMPING    = 0.65;
-    const DOT_R      = 2.5;
-    const HOVER_R    = 88;
-    const RIPPLE_SPD = 140;
-    const RIPPLE_DUR = 1.8;
-
-    let last = performance.now();
-
-    function update(now) {
-      const dt = Math.min((now - last) / 1000, 0.05);
-      last = now;
-      const t = now / 1000;
-
-      for (let i = ripples.length - 1; i >= 0; i--) {
-        ripples[i].t += dt;
-        if (ripples[i].t > RIPPLE_DUR) ripples.splice(i, 1);
+    // Cursor excites a small wave when it enters a new cell
+    if (isInside) {
+      const nr = Math.max(1, Math.min(GSIZE-2, Math.round((my - PAD) / cellH)));
+      const nc = Math.max(1, Math.min(GSIZE-2, Math.round((mx - PAD) / cellW)));
+      const ci = I(nr, nc);
+      if (ci !== lastCursorCell) {
+        nu[ci]          += 0.45;
+        nu[I(nr-1, nc)] += 0.18;
+        nu[I(nr+1, nc)] += 0.18;
+        nu[I(nr, nc-1)] += 0.18;
+        nu[I(nr, nc+1)] += 0.18;
+        lastCursorCell = ci;
       }
-      for (let i = rings.length - 1; i >= 0; i--) {
-        rings[i].born += dt;
-        rings[i].r    += 280 * dt;
-        if (rings[i].r > W * 1.5) rings.splice(i, 1);
-      }
-
-      dots.forEach(d => {
-        const breathe = 0.014 * Math.sin(t * 1.6 + d.x * 0.013 + d.y * 0.011);
-        let target = d.base + breathe;
-
-        if (isInside) {
-          const dist = Math.hypot(d.x - mx, d.y - my);
-          if (dist < HOVER_R) target += (1 - dist / HOVER_R) * 2.8;
-        }
-
-        ripples.forEach(rip => {
-          const dist     = Math.hypot(d.x - rip.cx, d.y - rip.cy);
-          const waveFront = rip.t * RIPPLE_SPD;
-          const waveDiff  = dist - waveFront;
-          if (Math.abs(waveDiff) < 60) {
-            target += Math.sin((1 - Math.abs(waveDiff) / 60) * Math.PI) * 2.2 * (1 - rip.t / RIPPLE_DUR);
-          }
-        });
-
-        const spring = (target - d.scale) * STIFFNESS;
-        d.vel = (d.vel + spring) * DAMPING;
-        d.scale += d.vel;
-      });
     }
 
-    function draw() {
-      // Black base in source-over, then screen for all dots
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = '#000';
+    // Rare ambient impulse — keeps surface alive at rest
+    if (Math.random() < 0.007) {
+      const r = 1 + Math.floor(Math.random() * (GSIZE-2));
+      const c = 1 + Math.floor(Math.random() * (GSIZE-2));
+      nu[I(r,c)] += 0.4 + Math.random() * 0.35;
+    }
+
+    u1.set(u);
+    u.set(nu);
+
+    // Age rings
+    for (let i = rings.length - 1; i >= 0; i--) {
+      rings[i].born += dt;
+      rings[i].r    += 265 * dt;
+      if (rings[i].r > W * 1.5) rings.splice(i, 1);
+    }
+  }
+
+  // ── Draw ──────────────────────────────────────────────────────────────────
+  const DOT_R = 3.2;
+
+  function draw() {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.roundRect(0, 0, W, H, 10); ctx.fill();
+
+    ctx.globalCompositeOperation = 'screen';
+
+    // Click rings
+    rings.forEach(rg => {
+      const a = Math.max(0, 0.48 * (1 - rg.born * 1.4));
       ctx.beginPath();
-      ctx.roundRect(0, 0, W, H, 10);
-      ctx.fill();
+      ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    });
 
-      // Cursor heat aura
-      if (isInside) {
-        ctx.globalCompositeOperation = 'screen';
-        const aura = ctx.createRadialGradient(mx, my, 0, mx, my, HOVER_R * 1.1);
-        aura.addColorStop(0,   'rgba(255,140,40,0.14)');
-        aura.addColorStop(0.5, 'rgba(255,80,20,0.05)');
-        aura.addColorStop(1,   'rgba(0,0,0,0)');
-        ctx.beginPath();
-        ctx.arc(mx, my, HOVER_R * 1.1, 0, Math.PI*2);
-        ctx.fillStyle = aura;
-        ctx.fill();
+    // Dots
+    dots.forEach(d => {
+      const val  = u[I(d.gr, d.gc)];
+      const disp = Math.max(-1, Math.min(3, val));
+
+      // Crest = bright + big, trough = dim + small
+      const brightness = Math.max(0.05, 0.22 + disp * 0.55);
+      const r = Math.max(0.3, DOT_R * (1 + disp * 0.38));
+
+      if (Math.abs(disp) > 0.2) {
+        ctx.shadowBlur  = Math.abs(disp) * 13;
+        ctx.shadowColor = `rgba(255,255,255,${Math.min(0.7, Math.abs(disp) * 0.45)})`;
       }
 
-      ctx.globalCompositeOperation = 'screen';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, r, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, brightness).toFixed(3)})`;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
 
-      // Click rings (warm)
-      rings.forEach(rg => {
-        const a = Math.max(0, 0.55 * (1 - rg.born * 1.4));
-        ctx.beginPath();
-        ctx.arc(rg.cx, rg.cy, rg.r, 0, Math.PI*2);
-        ctx.strokeStyle = `hsla(35,100%,70%,${a.toFixed(3)})`;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      });
-
-      // Dots
-      dots.forEach(d => {
-        const r    = Math.max(0.1, DOT_R * d.scale);
-        const disp = Math.max(0, d.scale - 1);
-        const t    = Math.min(disp / 1.8, 1);
-
-        // Blackbody color: deep blue at rest → cyan → warm white when excited
-        const hue = 215 - t * 182;  // 215 (blue) → 33 (orange)
-        const sat = 65  + t * 35;   // 65% → 100%
-        const lit = 26  + t * 60;   // 26% → 86%
-
-        if (disp > 0.08) {
-          ctx.shadowBlur  = disp * 16;
-          ctx.shadowColor = `hsl(${hue.toFixed(0)},${sat.toFixed(0)}%,${lit.toFixed(0)}%)`;
-        }
-
-        ctx.beginPath();
-        ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = `hsl(${hue.toFixed(0)},${sat.toFixed(0)}%,${lit.toFixed(0)}%)`;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      });
+    // Cursor dot
+    if (isInside && mx > 0) {
+      ctx.beginPath();
+      ctx.arc(mx, my, 2.5, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.50)';
+      ctx.fill();
     }
+  }
 
-    function loop(now) {
-      update(now);
-      draw();
-      requestAnimationFrame(loop);
-    }
-
+  function loop(now) {
+    update(now);
+    draw();
     requestAnimationFrame(loop);
-  </script>
+  }
+  requestAnimationFrame(loop);
+</script>
 </body>
 </html>
