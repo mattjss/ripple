@@ -80,24 +80,23 @@
       return AC;
     }
 
-    const NOTES = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25];
-    let noteIdx = 0;
+    // Pentatonic scale descending — top dots = high, bottom = low
+    const RIPPLE_NOTES = [784, 659, 523, 440, 392, 330, 262, 220];
     let lastNoteTime = 0;
 
-    function playNote(freq, vol = 0.08, dur = 0.18) {
+    function playNote(freq) {
       try {
         const a = ac();
         const t = a.currentTime;
-        if (t - lastNoteTime < 0.06) return;
+        if (t - lastNoteTime < 0.055) return;
         lastNoteTime = t;
-        // macOS glass bell — pure sine, clean soft attack
         const o = a.createOscillator(), g = a.createGain();
         o.connect(g); g.connect(a.destination);
         o.type = 'sine'; o.frequency.value = freq;
         g.gain.setValueAtTime(0.001, t);
-        g.gain.linearRampToValueAtTime(0.042, t + 0.006);
-        g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-        o.start(t); o.stop(t + 0.29);
+        g.gain.linearRampToValueAtTime(0.046, t + 0.009);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+        o.start(t); o.stop(t + 0.25);
       } catch (_) {}
     }
 
@@ -105,16 +104,26 @@
       try {
         const a = ac();
         const t = a.currentTime;
-        // macOS chime — high C major triad (C6 E6 G6), pure sine, long sustain
-        [1047, 1319, 1568].forEach((freq, i) => {
-          const d = i * 0.018;
+        // Water impact — brief noise burst
+        const nLen = Math.floor(a.sampleRate * 0.018);
+        const nBuf = a.createBuffer(1, nLen, a.sampleRate);
+        const nd = nBuf.getChannelData(0);
+        for (let i = 0; i < nLen; i++) nd[i] = (Math.random() * 2 - 1) * (1 - i / nLen);
+        const nSrc = a.createBufferSource(); nSrc.buffer = nBuf;
+        const lpf = a.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 1800;
+        const nG = a.createGain(); nG.gain.value = 0.14;
+        nSrc.connect(lpf); lpf.connect(nG); nG.connect(a.destination);
+        nSrc.start(t);
+        // Ripple spreading — C major ascending, 55ms stagger
+        [262, 330, 392, 523].forEach((freq, i) => {
+          const d = i * 0.055;
           const o = a.createOscillator(), g = a.createGain();
-          o.connect(g); g.connect(a.destination);
           o.type = 'sine'; o.frequency.value = freq;
+          o.connect(g); g.connect(a.destination);
           g.gain.setValueAtTime(0.001, t + d);
-          g.gain.linearRampToValueAtTime(0.068 - i * 0.016, t + d + 0.012);
-          g.gain.exponentialRampToValueAtTime(0.001, t + d + 0.72);
-          o.start(t + d); o.stop(t + d + 0.73);
+          g.gain.linearRampToValueAtTime(0.044 - i * 0.008, t + d + 0.018);
+          g.gain.exponentialRampToValueAtTime(0.001, t + d + 0.52);
+          o.start(t + d); o.stop(t + d + 0.53);
         });
       } catch (_) {}
     }
@@ -123,7 +132,11 @@
     function maybeNoteDot(di) {
       if (di === lastTickDot) return;
       lastTickDot = di;
-      playNote(NOTES[noteIdx++ % NOTES.length], 0.055, 0.14);
+      // Note pitch from dot's Y position — top = high, bottom = low
+      const dot = dots[di];
+      const yFrac = (dot.y - PAD) / (H - PAD * 2);
+      const freq = RIPPLE_NOTES[Math.min(Math.floor(yFrac * RIPPLE_NOTES.length), RIPPLE_NOTES.length - 1)];
+      playNote(freq);
     }
 
     canvas.addEventListener('mousemove', e => {
