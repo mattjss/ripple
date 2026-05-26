@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ripple</title>
+  <title>attract</title>
   <style>
     :root { --sz: 422px; }
     @media (min-width: 1440px) { :root { --sz: 576px; } }
@@ -28,36 +28,33 @@
 <body>
   <div id="wrap">
     <canvas id="c" width="500" height="500"></canvas>
-    <span id="label">ripple — move + click</span>
+    <span id="label">attract — move + click</span>
   </div>
 <script>
   const canvas = document.getElementById('c');
   const ctx    = canvas.getContext('2d');
   const W = 500, H = 500;
 
-  // ── Wave simulation ───────────────────────────────────────────────────────
-  const GSIZE  = 30;
-  const PAD    = 18;
-  const cellW  = (W - PAD * 2) / (GSIZE - 1);
-  const cellH  = (H - PAD * 2) / (GSIZE - 1);
-  const C_WAVE = 24;    // grid units/s
-  const DAMP   = 0.997; // gentle damping — waves persist and interfere more
+  // ── Nodes ─────────────────────────────────────────────────────────────────
+  const N_NODES    = 160;
+  const CONNECT_D  = 82;   // draw line when closer than this (px)
+  const ATTRACT_R  = 148;  // cursor pull radius
+  const ATTRACT_A  = 230;  // pull acceleration at edge of radius (px/s²)
+  const DRAG       = 2.6;  // velocity decay per second
+  const BORDER_PAD = 32;   // px from edge where soft wall begins
+  const BORDER_A   = 190;  // border repulsion acceleration
+  const BURST_R    = 185;  // click burst radius
+  const BURST_A    = 460;  // click burst acceleration
 
-  const u  = new Float32Array(GSIZE * GSIZE); // current
-  const u1 = new Float32Array(GSIZE * GSIZE); // previous
-  const nu = new Float32Array(GSIZE * GSIZE); // scratch
-
-  function I(r, c) { return r * GSIZE + c; }
-
-  // Grid dot rest positions (only computed once)
-  const dots = [];
-  for (let r = 0; r < GSIZE; r++)
-    for (let c = 0; c < GSIZE; c++)
-      dots.push({ x: PAD + c * cellW, y: PAD + r * cellH, gr: r, gc: c });
+  const nodes = Array.from({ length: N_NODES }, () => ({
+    x:  BORDER_PAD + Math.random() * (W - BORDER_PAD * 2),
+    y:  BORDER_PAD + Math.random() * (H - BORDER_PAD * 2),
+    vx: (Math.random() - 0.5) * 18,
+    vy: (Math.random() - 0.5) * 18,
+  }));
 
   let mx = -9999, my = -9999, isInside = false;
-  let lastCursorCell = -1;
-  const rings = [];
+  const bursts = [];
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   let clickAudio = null;
@@ -75,22 +72,22 @@
     my = (e.clientY - r.top)  * (H / r.height);
     isInside = true;
   });
-  canvas.addEventListener('mouseleave', () => {
-    isInside = false; mx = -9999; my = -9999; lastCursorCell = -1;
-  });
+  canvas.addEventListener('mouseleave', () => { isInside = false; mx = -9999; my = -9999; });
 
   canvas.addEventListener('pointerdown', e => {
     const r  = canvas.getBoundingClientRect();
-    const cx = (e.clientX - r.left) * (W / r.width);
-    const cy = (e.clientY - r.top)  * (H / r.height);
-    const nr = Math.max(1, Math.min(GSIZE-2, Math.round((cy - PAD) / cellH)));
-    const nc = Math.max(1, Math.min(GSIZE-2, Math.round((cx - PAD) / cellW)));
-    u[I(nr,   nc)]   += 5.5;
-    u[I(nr-1, nc)]   += 2.8;
-    u[I(nr+1, nc)]   += 2.8;
-    u[I(nr,   nc-1)] += 2.8;
-    u[I(nr,   nc+1)] += 2.8;
-    rings.push({ x: cx, y: cy, r: 0, born: 0 });
+    const bx = (e.clientX - r.left) * (W / r.width);
+    const by = (e.clientY - r.top)  * (H / r.height);
+    nodes.forEach(n => {
+      const dx = n.x - bx, dy = n.y - by;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < BURST_R && dist > 1) {
+        const f = BURST_A * (1 - dist / BURST_R) / dist;
+        n.vx += dx * f * 0.016; // scaled to 1 frame
+        n.vy += dy * f * 0.016;
+      }
+    });
+    bursts.push({ x: bx, y: by, r: 0, born: 0 });
     playClick();
   });
 
@@ -98,68 +95,44 @@
   let last = performance.now();
 
   function update(now) {
-    const dt  = Math.min((now - last) / 1000, 0.05);
+    const dt    = Math.min((now - last) / 1000, 0.05);
     last = now;
-    const fac = (C_WAVE * dt) * (C_WAVE * dt);
+    const decay = Math.exp(-DRAG * dt);
 
-    // 2D finite-difference wave equation
-    for (let r = 1; r < GSIZE-1; r++) {
-      for (let c = 1; c < GSIZE-1; c++) {
-        const i   = I(r, c);
-        const lap = u[I(r+1,c)] + u[I(r-1,c)] + u[I(r,c+1)] + u[I(r,c-1)] - 4*u[i];
-        nu[i] = (2*u[i] - u1[i] + fac * lap) * DAMP;
+    for (const n of nodes) {
+      let ax = 0, ay = 0;
+
+      // Cursor attraction
+      if (isInside) {
+        const dx = mx - n.x, dy = my - n.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < ATTRACT_R && dist > 2) {
+          const f = ATTRACT_A * (1 - dist / ATTRACT_R) / dist;
+          ax += dx * f;
+          ay += dy * f;
+        }
       }
+
+      // Soft border walls
+      if (n.x < BORDER_PAD)      ax += BORDER_A * (1 - n.x / BORDER_PAD);
+      if (n.x > W - BORDER_PAD)  ax -= BORDER_A * (1 - (W - n.x) / BORDER_PAD);
+      if (n.y < BORDER_PAD)      ay += BORDER_A * (1 - n.y / BORDER_PAD);
+      if (n.y > H - BORDER_PAD)  ay -= BORDER_A * (1 - (H - n.y) / BORDER_PAD);
+
+      n.vx = (n.vx + ax * dt) * decay;
+      n.vy = (n.vy + ay * dt) * decay;
+      n.x  = Math.max(2, Math.min(W - 2, n.x + n.vx * dt));
+      n.y  = Math.max(2, Math.min(H - 2, n.y + n.vy * dt));
     }
 
-    // Neumann (reflecting) boundaries — waves bounce off edges
-    for (let k = 0; k < GSIZE; k++) {
-      nu[I(0,k)]       = nu[I(1,k)];
-      nu[I(GSIZE-1,k)] = nu[I(GSIZE-2,k)];
-      nu[I(k,0)]       = nu[I(k,1)];
-      nu[I(k,GSIZE-1)] = nu[I(k,GSIZE-2)];
-    }
-
-    // Cursor excites a wave each time it enters a new grid cell
-    if (isInside) {
-      const nr = Math.max(1, Math.min(GSIZE-2, Math.round((my - PAD) / cellH)));
-      const nc = Math.max(1, Math.min(GSIZE-2, Math.round((mx - PAD) / cellW)));
-      const ci = I(nr, nc);
-      if (ci !== lastCursorCell) {
-        nu[ci]          += 0.55;
-        nu[I(nr-1, nc)] += 0.22;
-        nu[I(nr+1, nc)] += 0.22;
-        nu[I(nr, nc-1)] += 0.22;
-        nu[I(nr, nc+1)] += 0.22;
-        lastCursorCell = ci;
-      }
-    }
-
-    // Ambient impulses — keeps the surface alive at rest
-    if (Math.random() < 0.018) {
-      const r = 1 + Math.floor(Math.random() * (GSIZE-2));
-      const c = 1 + Math.floor(Math.random() * (GSIZE-2));
-      const amp = 0.32 + Math.random() * 0.28;
-      nu[I(r,c)]     += amp;
-      nu[I(r-1,c)]   += amp * 0.5;
-      nu[I(r+1,c)]   += amp * 0.5;
-      nu[I(r,c-1)]   += amp * 0.5;
-      nu[I(r,c+1)]   += amp * 0.5;
-    }
-
-    u1.set(u);
-    u.set(nu);
-
-    for (let i = rings.length - 1; i >= 0; i--) {
-      rings[i].born += dt;
-      rings[i].r    += 265 * dt;
-      if (rings[i].r > W * 1.5) rings.splice(i, 1);
+    for (let i = bursts.length - 1; i >= 0; i--) {
+      bursts[i].born += dt;
+      bursts[i].r    += 265 * dt;
+      if (bursts[i].r > W * 1.5) bursts.splice(i, 1);
     }
   }
 
   // ── Draw ──────────────────────────────────────────────────────────────────
-  const DOT_R    = 2.6;
-  const DISP_SCL = 3.4; // pixels of XY displacement per unit wave gradient
-
   function draw() {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#000';
@@ -167,50 +140,62 @@
 
     ctx.globalCompositeOperation = 'screen';
 
-    // Click rings
-    rings.forEach(rg => {
-      const a = Math.max(0, 0.48 * (1 - rg.born * 1.4));
+    // Burst rings
+    bursts.forEach(b => {
+      const a = Math.max(0, 0.46 * (1 - b.born * 1.45));
       ctx.beginPath();
-      ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI*2);
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.3;
       ctx.stroke();
     });
 
-    // Dots — displaced in XY by wave gradient so they physically ride the surface
-    dots.forEach(d => {
-      const val  = u[I(d.gr, d.gc)];
-      const disp = Math.max(-1.2, Math.min(3.5, val));
+    // Connections
+    ctx.lineCap = 'round';
+    const CD2 = CONNECT_D * CONNECT_D;
+    for (let i = 0; i < N_NODES; i++) {
+      for (let j = i + 1; j < N_NODES; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= CD2) continue;
+        const t = 1 - Math.sqrt(d2) / CONNECT_D;
+        ctx.beginPath();
+        ctx.moveTo(nodes[i].x, nodes[i].y);
+        ctx.lineTo(nodes[j].x, nodes[j].y);
+        ctx.strokeStyle = `rgba(255,255,255,${(t * t * 0.38).toFixed(3)})`;
+        ctx.lineWidth   = t * 1.1;
+        ctx.stroke();
+      }
+    }
 
-      const brightness = Math.max(0.06, 0.20 + disp * 0.52);
-      const radius     = Math.max(0.4,  DOT_R * (1 + disp * 0.30));
+    // Nodes
+    for (const n of nodes) {
+      let pull = 0;
+      if (isInside) {
+        const d = Math.hypot(n.x - mx, n.y - my);
+        if (d < ATTRACT_R) pull = 1 - d / ATTRACT_R;
+      }
 
-      // Wave gradient → positional displacement
-      const r1 = d.gr > 0       ? d.gr - 1 : 0;
-      const r2 = d.gr < GSIZE-1 ? d.gr + 1 : GSIZE-1;
-      const c1 = d.gc > 0       ? d.gc - 1 : 0;
-      const c2 = d.gc < GSIZE-1 ? d.gc + 1 : GSIZE-1;
-      const gradR = u[I(r2, d.gc)] - u[I(r1, d.gc)];
-      const gradC = u[I(d.gr, c2)] - u[I(d.gr, c1)];
-      const px = d.x + gradC * DISP_SCL;
-      const py = d.y + gradR * DISP_SCL;
+      const radius = 1.8 + pull * 1.4;
+      const alpha  = 0.24 + pull * 0.55;
 
-      if (Math.abs(disp) > 0.15) {
-        ctx.shadowBlur  = Math.abs(disp) * 10;
-        ctx.shadowColor = `rgba(255,255,255,${Math.min(0.6, Math.abs(disp) * 0.38)})`;
+      if (pull > 0.2) {
+        ctx.shadowBlur  = pull * 14;
+        ctx.shadowColor = `rgba(255,255,255,${(pull * 0.5).toFixed(3)})`;
       }
 
       ctx.beginPath();
-      ctx.arc(px, py, radius, 0, Math.PI*2);
-      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, brightness).toFixed(3)})`;
+      ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, alpha).toFixed(3)})`;
       ctx.fill();
       ctx.shadowBlur = 0;
-    });
+    }
 
-    // Cursor dot
+    // Cursor
     if (isInside && mx > 0) {
       ctx.beginPath();
-      ctx.arc(mx, my, 2.5, 0, Math.PI*2);
+      ctx.arc(mx, my, 2.5, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(255,255,255,0.50)';
       ctx.fill();
     }
