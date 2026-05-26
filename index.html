@@ -35,26 +35,31 @@
   const ctx    = canvas.getContext('2d');
   const W = 500, H = 500;
 
-  // ── Nodes ─────────────────────────────────────────────────────────────────
+  // ── Physics constants ──────────────────────────────────────────────────────
   const N_NODES    = 160;
-  const CONNECT_D  = 82;   // draw line when closer than this (px)
-  const ATTRACT_R  = 148;  // cursor pull radius
-  const ATTRACT_A  = 230;  // pull acceleration at edge of radius (px/s²)
-  const DRAG       = 2.6;  // velocity decay per second
-  const BORDER_PAD = 32;   // px from edge where soft wall begins
-  const BORDER_A   = 190;  // border repulsion acceleration
-  const BURST_R    = 185;  // click burst radius
-  const BURST_A    = 460;  // click burst acceleration
+  const CONNECT_D  = 78;   // connection distance (px)
+  const ATTRACT_R  = 165;  // cursor influence radius
+  const RADIAL_A   = 260;  // inward pull acceleration (px/s²)
+  const ORBITAL_A  = 190;  // tangential orbital acceleration — creates spiral/orbit
+  const DRAG       = 1.8;  // velocity decay per second (lower = more fluid)
+  const BORDER_PAD = 30;   // soft wall start distance from edge
+  const BORDER_A   = 200;  // soft wall repulsion
+  const BURST_R    = 190;  // click burst radius
+  const BURST_A    = 520;  // click burst acceleration
+  const TRAIL_LEN  = 7;    // frames of trail history per node
 
   const nodes = Array.from({ length: N_NODES }, () => ({
     x:  BORDER_PAD + Math.random() * (W - BORDER_PAD * 2),
     y:  BORDER_PAD + Math.random() * (H - BORDER_PAD * 2),
-    vx: (Math.random() - 0.5) * 18,
-    vy: (Math.random() - 0.5) * 18,
+    vx: (Math.random() - 0.5) * 28,
+    vy: (Math.random() - 0.5) * 28,
+    trail: [],
+    phase: Math.random() * Math.PI * 2, // for ambient drift variation
   }));
 
   let mx = -9999, my = -9999, isInside = false;
   const bursts = [];
+  const t0 = performance.now();
 
   // ── Audio ─────────────────────────────────────────────────────────────────
   let clickAudio = null;
@@ -78,12 +83,13 @@
     const r  = canvas.getBoundingClientRect();
     const bx = (e.clientX - r.left) * (W / r.width);
     const by = (e.clientY - r.top)  * (H / r.height);
+    // Radial burst — strong outward impulse
     nodes.forEach(n => {
       const dx = n.x - bx, dy = n.y - by;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < BURST_R && dist > 1) {
-        const f = BURST_A * (1 - dist / BURST_R) / dist;
-        n.vx += dx * f * 0.016; // scaled to 1 frame
+        const f = BURST_A * Math.pow(1 - dist / BURST_R, 0.6) / dist;
+        n.vx += dx * f * 0.016;
         n.vy += dy * f * 0.016;
       }
     });
@@ -97,27 +103,42 @@
   function update(now) {
     const dt    = Math.min((now - last) / 1000, 0.05);
     last = now;
+    const t     = (now - t0) / 1000;
     const decay = Math.exp(-DRAG * dt);
 
     for (const n of nodes) {
+      // Save trail position before moving
+      n.trail.push({ x: n.x, y: n.y });
+      if (n.trail.length > TRAIL_LEN) n.trail.shift();
+
       let ax = 0, ay = 0;
 
-      // Cursor attraction
+      // Ambient sinusoidal drift — keeps the field alive at rest
+      ax += Math.sin(n.y * 0.010 + t * 0.28 + n.phase) * 16;
+      ay += Math.cos(n.x * 0.010 - t * 0.22 + n.phase) * 16;
+
+      // Cursor: radial pull + orbital spin
       if (isInside) {
         const dx = mx - n.x, dy = my - n.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < ATTRACT_R && dist > 2) {
-          const f = ATTRACT_A * (1 - dist / ATTRACT_R) / dist;
-          ax += dx * f;
-          ay += dy * f;
+          const t_frac = 1 - dist / ATTRACT_R;
+          // Radial (toward cursor)
+          const rf = RADIAL_A * t_frac / dist;
+          ax += dx * rf;
+          ay += dy * rf;
+          // Tangential (perpendicular — counterclockwise orbit)
+          const of = ORBITAL_A * t_frac / dist;
+          ax += -dy * of;
+          ay +=  dx * of;
         }
       }
 
       // Soft border walls
-      if (n.x < BORDER_PAD)      ax += BORDER_A * (1 - n.x / BORDER_PAD);
-      if (n.x > W - BORDER_PAD)  ax -= BORDER_A * (1 - (W - n.x) / BORDER_PAD);
-      if (n.y < BORDER_PAD)      ay += BORDER_A * (1 - n.y / BORDER_PAD);
-      if (n.y > H - BORDER_PAD)  ay -= BORDER_A * (1 - (H - n.y) / BORDER_PAD);
+      if (n.x < BORDER_PAD)     ax += BORDER_A * (1 - n.x / BORDER_PAD);
+      if (n.x > W - BORDER_PAD) ax -= BORDER_A * (1 - (W - n.x) / BORDER_PAD);
+      if (n.y < BORDER_PAD)     ay += BORDER_A * (1 - n.y / BORDER_PAD);
+      if (n.y > H - BORDER_PAD) ay -= BORDER_A * (1 - (H - n.y) / BORDER_PAD);
 
       n.vx = (n.vx + ax * dt) * decay;
       n.vy = (n.vy + ay * dt) * decay;
@@ -127,12 +148,14 @@
 
     for (let i = bursts.length - 1; i >= 0; i--) {
       bursts[i].born += dt;
-      bursts[i].r    += 265 * dt;
+      bursts[i].r    += 268 * dt;
       if (bursts[i].r > W * 1.5) bursts.splice(i, 1);
     }
   }
 
   // ── Draw ──────────────────────────────────────────────────────────────────
+  const CD2 = CONNECT_D * CONNECT_D;
+
   function draw() {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#000';
@@ -140,9 +163,19 @@
 
     ctx.globalCompositeOperation = 'screen';
 
+    // Cursor attraction zone — soft radial glow
+    if (isInside && mx > 0) {
+      const grad = ctx.createRadialGradient(mx, my, ATTRACT_R * 0.1, mx, my, ATTRACT_R);
+      grad.addColorStop(0,   'rgba(255,255,255,0.045)');
+      grad.addColorStop(0.55,'rgba(255,255,255,0.012)');
+      grad.addColorStop(1,   'rgba(255,255,255,0)');
+      ctx.beginPath(); ctx.arc(mx, my, ATTRACT_R, 0, Math.PI * 2);
+      ctx.fillStyle = grad; ctx.fill();
+    }
+
     // Burst rings
     bursts.forEach(b => {
-      const a = Math.max(0, 0.46 * (1 - b.born * 1.45));
+      const a = Math.max(0, 0.46 * (1 - b.born * 1.4));
       ctx.beginPath();
       ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
@@ -150,39 +183,63 @@
       ctx.stroke();
     });
 
-    // Connections
+    // Connections — vary brightness by closeness
     ctx.lineCap = 'round';
-    const CD2 = CONNECT_D * CONNECT_D;
     for (let i = 0; i < N_NODES; i++) {
       for (let j = i + 1; j < N_NODES; j++) {
         const dx = nodes[i].x - nodes[j].x;
         const dy = nodes[i].y - nodes[j].y;
         const d2 = dx * dx + dy * dy;
         if (d2 >= CD2) continue;
-        const t = 1 - Math.sqrt(d2) / CONNECT_D;
+        const t    = 1 - Math.sqrt(d2) / CONNECT_D;
+        const a    = t * t * 0.42;
+        const lw   = t * 1.15;
+
+        // Bright glow on very close connections
+        if (t > 0.6) {
+          ctx.shadowBlur  = t * 8;
+          ctx.shadowColor = `rgba(255,255,255,${(t * 0.28).toFixed(3)})`;
+        }
         ctx.beginPath();
         ctx.moveTo(nodes[i].x, nodes[i].y);
         ctx.lineTo(nodes[j].x, nodes[j].y);
-        ctx.strokeStyle = `rgba(255,255,255,${(t * t * 0.38).toFixed(3)})`;
-        ctx.lineWidth   = t * 1.1;
+        ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+        ctx.lineWidth   = lw;
         ctx.stroke();
+        ctx.shadowBlur = 0;
       }
     }
 
-    // Nodes
+    // Node trails
+    for (const n of nodes) {
+      const tlen = n.trail.length;
+      for (let k = 0; k < tlen; k++) {
+        const frac = (k + 1) / (tlen + 1);
+        ctx.beginPath();
+        ctx.arc(n.trail[k].x, n.trail[k].y, 0.8 + frac * 0.7, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${(frac * frac * 0.18).toFixed(3)})`;
+        ctx.fill();
+      }
+    }
+
+    // Nodes — bright based on proximity to cursor
     for (const n of nodes) {
       let pull = 0;
       if (isInside) {
         const d = Math.hypot(n.x - mx, n.y - my);
         if (d < ATTRACT_R) pull = 1 - d / ATTRACT_R;
       }
+      // Also brighten by speed (kinetic energy)
+      const spd     = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+      const kinetic = Math.min(1, spd / 120);
 
-      const radius = 1.8 + pull * 1.4;
-      const alpha  = 0.24 + pull * 0.55;
+      const brightness = Math.max(0, pull * 0.6 + kinetic * 0.25);
+      const radius     = 1.6 + pull * 1.6 + kinetic * 0.5;
+      const alpha      = 0.20 + brightness * 0.65;
 
-      if (pull > 0.2) {
-        ctx.shadowBlur  = pull * 14;
-        ctx.shadowColor = `rgba(255,255,255,${(pull * 0.5).toFixed(3)})`;
+      if (brightness > 0.25) {
+        ctx.shadowBlur  = brightness * 16;
+        ctx.shadowColor = `rgba(255,255,255,${(brightness * 0.45).toFixed(3)})`;
       }
 
       ctx.beginPath();
@@ -192,11 +249,11 @@
       ctx.shadowBlur = 0;
     }
 
-    // Cursor
+    // Cursor dot
     if (isInside && mx > 0) {
       ctx.beginPath();
       ctx.arc(mx, my, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.50)';
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
       ctx.fill();
     }
   }
