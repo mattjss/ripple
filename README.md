@@ -1,8 +1,8 @@
-# Ripple
+# Attract
 
-A 20×20 dot membrane where each node runs spring physics. Dots shift from deep blue at rest to warm white when displaced — cursor proximity lifts the field into a spreading heat bloom. Click fires a propagating wave that travels outward through the grid; multiple simultaneous waves stack and brighten where they intersect.
+160 nodes drift slowly through the field, each repelled by soft boundary walls. Move your cursor in and they're pulled toward you — nearby nodes wire into a dense, glowing constellation web as connections form between nodes within range. The web tightens and brightens the closer you hold. Click to detonate a radial burst that scatters every node outward before they drift back and reassemble.
 
-**Interaction:** Move cursor to disturb the field · Click to fire a ripple wave  
-**Tech:** Canvas 2D, spring physics, blackbody color temperature, screen compositing
+**Interaction:** Move cursor to pull nodes into a constellation web · Click to detonate a burst  
+**Tech:** Canvas 2D, gravity physics, proximity-based connection graph, screen compositing
 
 [Live →](https://mattjss.github.io/ripple/)
