@@ -36,20 +36,20 @@
   const W = 500, H = 500;
 
   // ── Wave simulation ───────────────────────────────────────────────────────
-  const GSIZE  = 26;
-  const PAD    = 22;
+  const GSIZE  = 30;
+  const PAD    = 18;
   const cellW  = (W - PAD * 2) / (GSIZE - 1);
   const cellH  = (H - PAD * 2) / (GSIZE - 1);
-  const C_WAVE = 28;    // grid units / s  (Courant safe: C*dt ≈ 0.47 < 0.707)
-  const DAMP   = 0.994; // per-frame energy loss
+  const C_WAVE = 24;    // grid units/s
+  const DAMP   = 0.997; // gentle damping — waves persist and interfere more
 
-  // Two-frame history for the finite-difference wave equation
   const u  = new Float32Array(GSIZE * GSIZE); // current
   const u1 = new Float32Array(GSIZE * GSIZE); // previous
+  const nu = new Float32Array(GSIZE * GSIZE); // scratch
 
   function I(r, c) { return r * GSIZE + c; }
 
-  // Grid dot positions (fixed)
+  // Grid dot rest positions (only computed once)
   const dots = [];
   for (let r = 0; r < GSIZE; r++)
     for (let c = 0; c < GSIZE; c++)
@@ -60,25 +60,13 @@
   const rings = [];
 
   // ── Audio ─────────────────────────────────────────────────────────────────
-  let hoverAudio = null, clickAudio = null;
+  let clickAudio = null;
   function initAudio() {
-    if (hoverAudio) return;
-    hoverAudio = new Audio('./sounds/selection.mp3');
-    hoverAudio.volume = 0.06;
+    if (clickAudio) return;
     clickAudio = new Audio('./sounds/selection.mp3');
     clickAudio.volume = 0.42;
   }
-  function playNote() { initAudio(); hoverAudio.currentTime = 0; hoverAudio.play().catch(()=>{}); }
   function playClick() { initAudio(); clickAudio.currentTime = 0; clickAudio.play().catch(()=>{}); }
-
-  let lastTickDot = -1, lastTickMs = 0;
-  function maybeNoteDot(di) {
-    if (di === lastTickDot) return;
-    const now = performance.now();
-    if (now - lastTickMs < 240) return;
-    lastTickDot = di; lastTickMs = now;
-    playNote();
-  }
 
   // ── Events ────────────────────────────────────────────────────────────────
   canvas.addEventListener('mousemove', e => {
@@ -86,46 +74,35 @@
     mx = (e.clientX - r.left) * (W / r.width);
     my = (e.clientY - r.top)  * (H / r.height);
     isInside = true;
-
-    // Sound: nearest dot
-    let nearestDi = -1, nearestDist = 9999;
-    dots.forEach((d, i) => {
-      const dist = Math.hypot(d.x - mx, d.y - my);
-      if (dist < nearestDist) { nearestDist = dist; nearestDi = i; }
-    });
-    if (nearestDist < 22) maybeNoteDot(nearestDi);
   });
   canvas.addEventListener('mouseleave', () => {
-    isInside = false; mx = -9999; my = -9999;
-    lastTickDot = -1; lastCursorCell = -1;
+    isInside = false; mx = -9999; my = -9999; lastCursorCell = -1;
   });
 
   canvas.addEventListener('pointerdown', e => {
     const r  = canvas.getBoundingClientRect();
     const cx = (e.clientX - r.left) * (W / r.width);
     const cy = (e.clientY - r.top)  * (H / r.height);
-    // Impulse at nearest grid cell
     const nr = Math.max(1, Math.min(GSIZE-2, Math.round((cy - PAD) / cellH)));
     const nc = Math.max(1, Math.min(GSIZE-2, Math.round((cx - PAD) / cellW)));
-    u[I(nr, nc)]     += 4.5;
-    u[I(nr-1, nc)]   += 2.0;
-    u[I(nr+1, nc)]   += 2.0;
-    u[I(nr, nc-1)]   += 2.0;
-    u[I(nr, nc+1)]   += 2.0;
+    u[I(nr,   nc)]   += 5.5;
+    u[I(nr-1, nc)]   += 2.8;
+    u[I(nr+1, nc)]   += 2.8;
+    u[I(nr,   nc-1)] += 2.8;
+    u[I(nr,   nc+1)] += 2.8;
     rings.push({ x: cx, y: cy, r: 0, born: 0 });
     playClick();
   });
 
   // ── Update ────────────────────────────────────────────────────────────────
   let last = performance.now();
-  const nu = new Float32Array(GSIZE * GSIZE); // reuse buffer
 
   function update(now) {
-    const dt = Math.min((now - last) / 1000, 0.05);
+    const dt  = Math.min((now - last) / 1000, 0.05);
     last = now;
     const fac = (C_WAVE * dt) * (C_WAVE * dt);
 
-    // 2D finite-difference wave equation (interior)
+    // 2D finite-difference wave equation
     for (let r = 1; r < GSIZE-1; r++) {
       for (let c = 1; c < GSIZE-1; c++) {
         const i   = I(r, c);
@@ -136,38 +113,42 @@
 
     // Neumann (reflecting) boundaries — waves bounce off edges
     for (let k = 0; k < GSIZE; k++) {
-      nu[I(0,k)]        = nu[I(1,k)];
-      nu[I(GSIZE-1,k)]  = nu[I(GSIZE-2,k)];
-      nu[I(k,0)]        = nu[I(k,1)];
-      nu[I(k,GSIZE-1)]  = nu[I(k,GSIZE-2)];
+      nu[I(0,k)]       = nu[I(1,k)];
+      nu[I(GSIZE-1,k)] = nu[I(GSIZE-2,k)];
+      nu[I(k,0)]       = nu[I(k,1)];
+      nu[I(k,GSIZE-1)] = nu[I(k,GSIZE-2)];
     }
 
-    // Cursor excites a small wave when it enters a new cell
+    // Cursor excites a wave each time it enters a new grid cell
     if (isInside) {
       const nr = Math.max(1, Math.min(GSIZE-2, Math.round((my - PAD) / cellH)));
       const nc = Math.max(1, Math.min(GSIZE-2, Math.round((mx - PAD) / cellW)));
       const ci = I(nr, nc);
       if (ci !== lastCursorCell) {
-        nu[ci]          += 0.45;
-        nu[I(nr-1, nc)] += 0.18;
-        nu[I(nr+1, nc)] += 0.18;
-        nu[I(nr, nc-1)] += 0.18;
-        nu[I(nr, nc+1)] += 0.18;
+        nu[ci]          += 0.55;
+        nu[I(nr-1, nc)] += 0.22;
+        nu[I(nr+1, nc)] += 0.22;
+        nu[I(nr, nc-1)] += 0.22;
+        nu[I(nr, nc+1)] += 0.22;
         lastCursorCell = ci;
       }
     }
 
-    // Rare ambient impulse — keeps surface alive at rest
-    if (Math.random() < 0.007) {
+    // Ambient impulses — keeps the surface alive at rest
+    if (Math.random() < 0.018) {
       const r = 1 + Math.floor(Math.random() * (GSIZE-2));
       const c = 1 + Math.floor(Math.random() * (GSIZE-2));
-      nu[I(r,c)] += 0.4 + Math.random() * 0.35;
+      const amp = 0.32 + Math.random() * 0.28;
+      nu[I(r,c)]     += amp;
+      nu[I(r-1,c)]   += amp * 0.5;
+      nu[I(r+1,c)]   += amp * 0.5;
+      nu[I(r,c-1)]   += amp * 0.5;
+      nu[I(r,c+1)]   += amp * 0.5;
     }
 
     u1.set(u);
     u.set(nu);
 
-    // Age rings
     for (let i = rings.length - 1; i >= 0; i--) {
       rings[i].born += dt;
       rings[i].r    += 265 * dt;
@@ -176,7 +157,8 @@
   }
 
   // ── Draw ──────────────────────────────────────────────────────────────────
-  const DOT_R = 3.2;
+  const DOT_R    = 2.6;
+  const DISP_SCL = 3.4; // pixels of XY displacement per unit wave gradient
 
   function draw() {
     ctx.globalCompositeOperation = 'source-over';
@@ -195,22 +177,31 @@
       ctx.stroke();
     });
 
-    // Dots
+    // Dots — displaced in XY by wave gradient so they physically ride the surface
     dots.forEach(d => {
       const val  = u[I(d.gr, d.gc)];
-      const disp = Math.max(-1, Math.min(3, val));
+      const disp = Math.max(-1.2, Math.min(3.5, val));
 
-      // Crest = bright + big, trough = dim + small
-      const brightness = Math.max(0.05, 0.22 + disp * 0.55);
-      const r = Math.max(0.3, DOT_R * (1 + disp * 0.38));
+      const brightness = Math.max(0.06, 0.20 + disp * 0.52);
+      const radius     = Math.max(0.4,  DOT_R * (1 + disp * 0.30));
 
-      if (Math.abs(disp) > 0.2) {
-        ctx.shadowBlur  = Math.abs(disp) * 13;
-        ctx.shadowColor = `rgba(255,255,255,${Math.min(0.7, Math.abs(disp) * 0.45)})`;
+      // Wave gradient → positional displacement
+      const r1 = d.gr > 0       ? d.gr - 1 : 0;
+      const r2 = d.gr < GSIZE-1 ? d.gr + 1 : GSIZE-1;
+      const c1 = d.gc > 0       ? d.gc - 1 : 0;
+      const c2 = d.gc < GSIZE-1 ? d.gc + 1 : GSIZE-1;
+      const gradR = u[I(r2, d.gc)] - u[I(r1, d.gc)];
+      const gradC = u[I(d.gr, c2)] - u[I(d.gr, c1)];
+      const px = d.x + gradC * DISP_SCL;
+      const py = d.y + gradR * DISP_SCL;
+
+      if (Math.abs(disp) > 0.15) {
+        ctx.shadowBlur  = Math.abs(disp) * 10;
+        ctx.shadowColor = `rgba(255,255,255,${Math.min(0.6, Math.abs(disp) * 0.38)})`;
       }
 
       ctx.beginPath();
-      ctx.arc(d.x, d.y, r, 0, Math.PI*2);
+      ctx.arc(px, py, radius, 0, Math.PI*2);
       ctx.fillStyle = `rgba(255,255,255,${Math.min(1, brightness).toFixed(3)})`;
       ctx.fill();
       ctx.shadowBlur = 0;
