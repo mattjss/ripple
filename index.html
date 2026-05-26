@@ -141,12 +141,15 @@
     function update(now) {
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
+      const t = now / 1000;
       for (let i = ripples.length - 1; i >= 0; i--) {
         ripples[i].t += dt;
         if (ripples[i].t > RIPPLE_DUR) ripples.splice(i, 1);
       }
       dots.forEach(d => {
-        let target = d.base;
+        // Idle breathing — each dot offset by position so it looks organic
+        const breathe = 0.014 * Math.sin(t * 1.6 + d.x * 0.013 + d.y * 0.011);
+        let target = d.base + breathe;
         if (isInside) {
           const dist = Math.hypot(d.x - mx, d.y - my);
           if (dist < HOVER_R) target += (1 - dist / HOVER_R) * 1.6;
@@ -173,10 +176,17 @@
       ctx.fill();
       dots.forEach(d => {
         const r = Math.max(0.1, DOT_R * d.scale);
+        const disp = d.scale - 1;
+        // Glow halo on displaced dots
+        if (disp > 0.12) {
+          ctx.shadowBlur = disp * 14;
+          ctx.shadowColor = 'rgba(255,255,255,0.55)';
+        }
         ctx.beginPath();
         ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,255,255,${Math.min(1, 0.35 + (d.scale - 1) * 0.65)})`;
+        ctx.fillStyle = `rgba(255,255,255,${Math.min(1, 0.35 + disp * 0.65)})`;
         ctx.fill();
+        ctx.shadowBlur = 0;
       });
     }
 
